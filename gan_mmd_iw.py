@@ -9,6 +9,7 @@ import sys
 sys.path.append('/home/maurice/mmd')
 import tensorflow as tf
 layers = tf.layers
+import time
 
 from matplotlib.gridspec import GridSpec
 from tensorflow.examples.tutorials.mnist import input_data
@@ -25,22 +26,26 @@ parser.add_argument('--weighted', default=False, action='store_true', dest='weig
 parser.add_argument('--do_p', default=False, action='store_true', dest='do_p',
     help='Choose whether to use P, instead of TP')
 parser.add_argument('--data_dim', type=int, default=2)
+parser.add_argument('--max_step', type=int, default=25000)
+parser.add_argument('--log_step', type=int, default=1000)
+parser.add_argument('--estimator', type=str, default='sniw', choices=['sniw', 'iw'])
+
 args = parser.parse_args()
 tag = args.tag
-weighted = args.weighted
+weighted = args.weighted  # NOTE: This does nothing right now, because it doesn't run unweighted at all.
 do_p = args.do_p
 data_dim = args.data_dim
+max_step = args.max_step
+log_step = args.log_step
+estimator = args.estimator
 
 data_num = 10000
 latent_dim = 10
-
-batch_size = 64  # MIW will split batch into 4 groups.
+batch_size = 64 
 noise_dim = 10
 h_dim = 10
 learning_rate_init = 1e-4
-log_iter = 1000
 log_dir = 'results/mmd_{}'.format(tag)
-max_iter = 25000
 
 
 # Load data.
@@ -59,6 +64,8 @@ max_iter = 25000
  data_raw_mean,
  data_raw_std) = get_data(data_dim, with_latents=False)
 
+data_num = data_raw.shape[0]
+
 
 def sigmoid_cross_entropy_with_logits(logits, labels):
     try:
@@ -67,7 +74,7 @@ def sigmoid_cross_entropy_with_logits(logits, labels):
         return tf.nn.sigmoid_cross_entropy_with_logits(logits=logits, targets=labels)
 
 
-def plot(generated, data_raw, data_raw_unthinned, it, mmd_gen_vs_unthinned):
+def plot(generated, data_raw, data_raw_unthinned, step, mmd_gen_vs_unthinned):
     gen_v1 = generated[:, 0] 
     gen_v2 = generated[:, 1] 
     raw_v1 = [d[0] for d in data_raw]
@@ -120,10 +127,10 @@ def plot(generated, data_raw, data_raw_unthinned, it, mmd_gen_vs_unthinned):
     plt.setp(ax_raw_marg_y.get_yticklabels(), visible=False)
     ########
 
-    plt.suptitle('mmdgan. it: {}, mmd_gen_vs_unthinned: {:.4f}'.format(
-        it, mmd_gen_vs_unthinned))
+    plt.suptitle('mmdgan. step: {}, mmd_gen_vs_unthinned: {:.4f}'.format(
+        step, mmd_gen_vs_unthinned))
 
-    plt.savefig('{}/{}.png'.format(log_dir, it))
+    plt.savefig('{}/{}.png'.format(log_dir, step))
     plt.close()
 
 
@@ -182,42 +189,16 @@ def generator(z, reuse=False):
     return g, g_vars
 
 
-def tf_median(v):
-    m = v.get_shape()[0]//2
-    return tf.nn.top_k(v, m).values[m-1]
-
-
-def compute_mmd_iw_median_of_means(input1, input2, input1_weights):
-    """Wrapper on compute_mmd_iw, to compute median of means.i
-    
-    Split input into groups, compute MMD on each, and do backprop on the median
-    of those MMDs.
-    """
-    k1_in1, k2_in1, k3_in1, k4_in1 = tf.split(input1, 4)
-    k1_in2, k2_in2, k3_in2, k4_in2 = tf.split(input2, 4)
-    k1_in1_w, k2_in1_w, k3_in1_w, k4_in1_w = tf.split(input1_weights, 4)
-    
-    mmd1 = compute_mmd_iw(k1_in1, k1_in2, k1_in1_w)
-    mmd2 = compute_mmd_iw(k2_in1, k2_in2, k2_in1_w)
-    mmd3 = compute_mmd_iw(k3_in1, k3_in2, k3_in1_w)
-    mmd4 = compute_mmd_iw(k4_in1, k4_in2, k4_in1_w)
-
-    median_of_mmds = tf_median(tf.stack([mmd1, mmd2, mmd3, mmd4], axis=0))
-    return median_of_mmds
-
-
-def compute_mmd_iw(in1, in2, in1_weights):
+def compute_mmd_weighted(input1, input2, input1_weights, estimator):
     """Computes MMD between two batches of d-dimensional inputs.
     
-    In this setting, in1 is real and in2 is generated, so in1 
+    In this setting, input1 is real and input2 is generated, so input1 
     has weights.
     """
-    batch_size = in1.shape[0]  # Does not use global var, since batch is split.
-
     num_combos_xx = tf.to_float(batch_size * (batch_size - 1) / 2)
     num_combos_yy = tf.to_float(batch_size * (batch_size - 1) / 2)
 
-    v = tf.concat([in1, in2], 0)
+    v = tf.concat([input1, input2], 0)
     VVT = tf.matmul(v, tf.transpose(v))
     sqs = tf.reshape(tf.diag_part(VVT), [-1, 1])
     sqs_tiled_horiz = tf.tile(sqs, tf.transpose(sqs).get_shape())
@@ -248,18 +229,35 @@ def compute_mmd_iw(in1, in2, in1_weights):
     #Kw_xx_upper = K_xx * p1p2_weights_upper_normed
     #Kw_xy = K_xy * p1_weights_normed
 
-    # Importance-weighted.
-    weights_tiled_horiz = tf.tile(in1_weights, [1, batch_size])
-    p1_weights = weights_tiled_horiz
-    p2_weights = tf.transpose(p1_weights) 
-    p1p2_weights = p1_weights * p2_weights
-    p1p2_weights_upper = upper(p1p2_weights)
-    Kw_xx_upper = K_xx * p1p2_weights_upper
-    Kw_xy = K_xy * p1_weights
+    if estimator == 'iw':
+        # Importance-weighted.
+        weights_tiled_horiz = tf.tile(input1_weights, [1, batch_size])
+        p1_weights = weights_tiled_horiz
+        p2_weights = tf.transpose(p1_weights) 
+        p1p2_weights = p1_weights * p2_weights
+        p1p2_weights_upper = upper(p1p2_weights)
+        Kw_xx_upper = K_xx * p1p2_weights_upper
+        Kw_xy = K_xy * p1_weights
 
-    mmd = (tf.reduce_sum(Kw_xx_upper) / num_combos_xx +
-           tf.reduce_sum(K_yy_upper) / num_combos_yy -
-           2 * tf.reduce_mean(Kw_xy))
+        mmd = (tf.reduce_sum(Kw_xx_upper) / num_combos_xx +
+               tf.reduce_sum(K_yy_upper) / num_combos_yy -
+               2 * tf.reduce_mean(Kw_xy))
+
+    elif estimator == 'sniw':
+        # Self-normalized weights.
+        weights_tiled_horiz = tf.tile(input1_weights, [1, batch_size])
+        p1_weights = weights_tiled_horiz
+        p2_weights = tf.transpose(p1_weights) 
+        p1p2_weights = p1_weights * p2_weights
+        p1p2_weights_upper = upper(p1p2_weights)
+        p1p2_weights_upper_normed = p1p2_weights_upper / tf.reduce_sum(p1p2_weights_upper)
+        p1_weights_normed = p1_weights / tf.reduce_sum(p1_weights)
+        Kw_xx_upper = K_xx * p1p2_weights_upper_normed
+        Kw_xy = K_xy * p1_weights_normed
+
+        mmd = (tf.reduce_sum(Kw_xx_upper) +
+               tf.reduce_sum(K_yy_upper) / num_combos_yy -
+               2 * tf.reduce_sum(Kw_xy))
 
     return mmd
         
@@ -279,7 +277,7 @@ d_real, d_logit_real, d_vars = discriminator(x, reuse=False)
 d_fake, d_logit_fake, _ = discriminator(g, reuse=True)
 
 # Define losses.
-mmd = compute_mmd_iw_median_of_means(x, g, x_weights)
+mmd = compute_mmd_weighted(x, g, x_weights, estimator)
 g_loss = mmd
 
 g_optim = tf.train.RMSPropOptimizer(learning_rate=lr).minimize(
@@ -296,8 +294,12 @@ sess.run(tf.global_variables_initializer())
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
+
+
 # train()
-for it in range(max_iter):
+# Start clock to time execution in chunks of log_step steps.
+t0 = time.time()
+for step in range(max_step):
     x_batch, x_batch_weights = sample_data(data_normed, data_raw_weights, batch_size)
     z_batch = get_sample_z(batch_size, noise_dim)
 
@@ -308,10 +310,15 @@ for it in range(max_iter):
             x: x_batch,
             x_weights: x_batch_weights})
 
-    if it % 100000 == 9999:
+    # TODO: Check whether lr_update helps here.
+    if step % 100000 == 9999:
         sess.run(lr_update)
 
-    if it % log_iter == 0:
+    if step > 0 and step % log_step == 0:
+        # Stop clock after log_step training steps.
+        t1 = time.time()
+        chunk_time = t1 - t0
+
         n_sample = 10000 
         z_sample_input = get_sample_z(n_sample, noise_dim)
         g_out = sess.run(g_sample, feed_dict={z_sample: z_sample_input})
@@ -330,7 +337,7 @@ for it in range(max_iter):
             data_raw_unthinned[np.random.choice(data_num, 500)], k=5)
 
         if data_dim == 2:
-            fig = plot(generated, data_raw, data_raw_unthinned, it,
+            fig = plot(generated, data_raw, data_raw_unthinned, step,
                 mmd_gen_vs_unthinned)
 
         if np.isnan(g_loss_):
@@ -340,8 +347,8 @@ for it in range(max_iter):
         print("#################")
         lr_ = sess.run(lr)
         print('mmd_{}'.format(tag))
-        print('Iter: {}, lr={:.4f}'.format(it, lr_))
-        print('  median of mmds / g_loss: {:.4}'.format(g_loss_))
+        print('Iter: {}, lr={:.4f}'.format(step, lr_))
+        print('  g_loss: {:.4}'.format(g_loss_))
         print('  mmd_gen_vs_unthinned: {:.4}'.format(mmd_gen_vs_unthinned))
         print(data_raw[np.random.choice(data_num, 1), :5])
         print
@@ -352,3 +359,12 @@ for it in range(max_iter):
             f.write(str(energy_gen_vs_unthinned)+'\n')
         with open(os.path.join(log_dir, 'scores_kl.txt'), 'a') as f:
             f.write(str(kl_gen_vs_unthinned)+'\n')
+
+        # Plot timing and performance together.
+        with open(os.path.join(log_dir, 'timing_perf.txt'), 'a') as f:
+            f.write('mmd,{},{},{},{},{},{}\n'.format(
+                tag, step, mmd_gen_vs_unthinned, energy_gen_vs_unthinned,
+                kl_gen_vs_unthinned, chunk_time))
+
+        # Restart clock for next log_step training steps.
+        t0 = time.time()

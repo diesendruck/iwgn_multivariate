@@ -18,8 +18,8 @@ import sys
 """
 
 model_name = sys.argv[1]
-#base_path = '/home/maurice/iwgn_multivariate/results_20runs'
-base_path = '/home/maurice/iwgn_multivariate/results_20runs'
+#base_path = '/home/maurice/iwgn_multivariate/results_20runs' # Used in paper
+base_path = '/home/maurice/iwgn_multivariate/results'
 model_run_names = [n for n in os.listdir(base_path) if model_name in n]
 
 FIXED_DIM_CHOICES = [2, 4, 10]  # Defined by generative scripts.
@@ -51,10 +51,22 @@ for dim in FIXED_DIM_CHOICES:
         kl_run_scores = kl_run_scores_not_nan[-tail:]
         kl_run_means.append(np.mean(kl_run_scores))
 
+
     # Print summary statistic for the multiple runs of each experiment.
-    print('  {} (n={}): MMD {:.4f} +- {:.4f},  E: {:.4f} +- {:.4f},  KL: {:.4f} +- {:.4f}'.format(
-        model_dim_combo, len(mmd_run_means),
-        np.mean(mmd_run_means), np.std(mmd_run_means),
-        np.mean(energy_run_means), np.std(energy_run_means),
-        np.mean(kl_run_means), np.std(kl_run_means)))
+    # PRINT MEAN RESULTS
+    type_to_report = 'min'  # ['mean', 'min']
+    if type_to_report == 'mean':
+        print(('  {} (n={}) MEAN: MMD {:.4f} +- {:.4f},  E: {:.4f} +- {:.4f}, '
+               'KL: {:.4f} +- {:.4f}').format(
+                   model_dim_combo, len(mmd_run_means),
+                   np.mean(mmd_run_means), np.std(mmd_run_means),
+                   np.mean(energy_run_means), np.std(energy_run_means),
+                   np.mean(kl_run_means), np.std(kl_run_means)))
+    elif type_to_report == 'min':
+        print(('  {} (n={}) MIN: MMD {:.4f},{:.4f},  E: {:.4f},{:.4f},  '
+               'KL: {:.4f},{:.4f}').format(
+                   model_dim_combo, len(mmd_run_means),
+                   np.min(mmd_run_means), np.std(mmd_run_means),
+                   np.min(energy_run_means), np.std(energy_run_means),
+                   np.min(kl_run_means), np.std(kl_run_means)))
 print

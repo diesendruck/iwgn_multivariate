@@ -41,7 +41,8 @@ def one_time_data_setup():
     n = 10000
     latent_dim = 10
     with_latents = True
-    m_weight = 5.  # NOTE: THIS MUST AGREE WITH THE THINNING_FN DEFINITION!
+    # Fetch constant, which is based on thinning fn.
+    m_weight = thinning_fn([0], return_normalizing_constant=True)
 
     # Make the files and store them in the "data" subdirectory.
     _make_files(n, 2, latent_dim, with_latents=True, m_weight=m_weight)
@@ -148,15 +149,20 @@ def generate_data(data_num, data_dim, latent_dim, with_latents=False, m_weight=1
             data_normed, data_raw_mean, data_raw_std)
 
 
-def thinning_fn(inputs, is_tf=True, m_weight=1):
+def thinning_fn(inputs, is_tf=True, m_weight=1, return_normalizing_constant=False):
     """Thinning on zero'th index of input."""
     eps = 1e-10
+
+    # Example: For thinning fn x^4 to integrate to 1 on [0,1], m_weight = 5.
+    normalizing_constant = 9
+    if return_normalizing_constant:
+        return normalizing_constant
+
     if is_tf:
-        # NOTE: THIS MUST AGREE WITH THE m_weight!
-        #   e.g. For this to integrate to 1 on [0,1], m_weight = 5.
-        return m_weight * inputs[0] ** 4 + eps  
+        return m_weight * inputs[0] ** 8 + eps  
     else:
-        return m_weight * inputs[0] ** 4 + eps
+        return m_weight * inputs[0] ** 8 + eps
+    # NOTE: Remember to set normalizing_constant above.
 
 
 def vert(arr):
