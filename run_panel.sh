@@ -8,13 +8,13 @@
 #   bash run_panel.sh 'eval'
 # Note: For run-time performance, comment out the parallel operator '&' so that
 #   each run gets the same resources.
+# Note: This script calls the sub-task script run_short_panel.sh.
 
 
 # SET UP list of model names to run and eval.
-declare -a model_names=('ce_iw' 'ce_miw' 'ce_sniw' 'ce_conditional' 'ce_upsample' 'mmd_iw' 'mmd_miw' 'mmd_sniw' 'mmd_upsample')
+#declare -a model_names=('ce_iw' 'ce_miw' 'ce_sniw' 'ce_conditional' 'ce_upsample' 'mmd_iw' 'mmd_miw' 'mmd_sniw' 'mmd_upsample')
+declare -a model_names=('ce_iw' 'ce_miw' 'ce_sniw' 'ce_upsample' 'mmd_iw' 'mmd_miw' 'mmd_sniw' 'mmd_upsample')
 #declare -a model_names=('ce_iw' 'ce_miw' 'ce_sniw' 'ce_upsample')
-#declare -a model_names=('mmd_iw' 'mmd_miw' 'mmd_sniw' 'mmd_upsample')
-#declare -a model_names=('ce_iw' 'ce_miw' 'ce_sniw' 'ce_conditional' 'ce_upsample')
 
 
 # RUN the models.

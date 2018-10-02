@@ -34,7 +34,7 @@ data_dim = args.data_dim
 max_step = args.max_step
 log_step = args.log_step
 batch_size = args.batch_size
-learning_rate = args.learning_rate
+learning_rate_init = args.learning_rate
 estimator = args.estimator
 
 latent_dim = 10
@@ -52,7 +52,8 @@ log_dir = 'results/ce_{}'.format(tag)
 # data_raw_mean,
 # data_raw_std) = generate_data(
 #     data_num, data_dim, latent_dim, with_latents=False, m_weight=2.)  # m_weight since changed to 5.
-(data_raw,
+(m_weight,
+ data_raw,
  data_raw_weights,
  data_raw_unthinned,
  data_raw_unthinned_weights,
@@ -63,9 +64,6 @@ log_dir = 'results/ce_{}'.format(tag)
 data_num_original = data_raw.shape[0]
 data_num = data_raw.shape[0]
 
-raw_pct = np.percentile(data_raw_unthinned, [0, 20, 50, 80, 100])
-print('Data raw unthinned percentiles: {}'.format(raw_pct))
-
 
 def sigmoid_cross_entropy_with_logits(logits, labels):
     try:
@@ -74,7 +72,7 @@ def sigmoid_cross_entropy_with_logits(logits, labels):
         return tf.nn.sigmoid_cross_entropy_with_logits(logits=logits, targets=labels)
 
 
-def plot(generated, data_raw, data_raw_unthinned, step, measure_to_plot):
+def plot(generated, data_raw, data_raw_unthinned, log_dir, tag, step, measure_to_plot):
     gen_v1 = generated[:, 0] 
     gen_v2 = generated[:, 1] 
     raw_v1 = [d[0] for d in data_raw]
@@ -106,7 +104,7 @@ def plot(generated, data_raw, data_raw_unthinned, step, measure_to_plot):
     #    alpha=0.3, aspect='auto',
     #    extent=[grid_x.min(), grid_x.max(), grid_y.min(), grid_y.max()])
 
-    bins = np.arange(-3, 3, 0.2)
+    bins = np.arange(-5, 5, 0.2)
     ax_marg_x.hist([raw_v1, gen_v1], bins=bins, color=['gray', 'blue'],
         label=['data', 'gen'], alpha=0.3, normed=True)
     ax_marg_y.hist([raw_v2, gen_v2], bins=bins, color=['gray', 'blue'],
@@ -134,8 +132,8 @@ def plot(generated, data_raw, data_raw_unthinned, step, measure_to_plot):
     plt.setp(ax_raw_marg_y.get_yticklabels(), visible=False)
     ########
 
-    plt.suptitle('iwgan. step: {}, discrepancy: {:.4f}'.format(
-        step, measure_to_plot))
+    plt.suptitle('{}. step: {}, discrepancy: {:.4f}'.format(
+        log_dir[8:], step, measure_to_plot))
     plt.savefig('{}/{}.png'.format(log_dir, step))
     plt.close()
 
@@ -181,6 +179,10 @@ def get_sample_z(m, n):
 
 
 # Beginning of graph.
+
+lr = tf.Variable(learning_rate_init, name='lr', trainable=False)
+lr_update = tf.assign(lr, tf.maximum(lr * 0.5, 1e-8), name='lr_update')
+
 z = tf.placeholder(tf.float32, shape=[None, noise_dim], name='z')
 x = tf.placeholder(tf.float32, shape=[None, data_dim], name='x')
 w = tf.placeholder(tf.float32, shape=[None, 1], name='weights')
@@ -208,17 +210,17 @@ g_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
     logits=d_logit_fake, labels=tf.ones_like(d_logit_fake)))
 
 # Set optim nodes.
-clip = 1
+clip = 0
 if clip:
-    d_opt = tf.train.RMSPropOptimizer(learning_rate=learning_rate)
+    d_opt = tf.train.RMSPropOptimizer(learning_rate=lr)
     d_grads_, d_vars_ = zip(*d_opt.compute_gradients(d_loss, var_list=d_vars))
     d_grads_clipped_ = tuple(
         [tf.clip_by_value(grad, -0.01, 0.01) for grad in d_grads_])
     d_optim = d_opt.apply_gradients(zip(d_grads_clipped_, d_vars_))
 else:
-    d_optim = tf.train.RMSPropOptimizer(learning_rate=learning_rate).minimize(
+    d_optim = tf.train.RMSPropOptimizer(learning_rate=lr).minimize(
         d_loss, var_list=d_vars)
-g_optim = tf.train.RMSPropOptimizer(learning_rate=learning_rate).minimize(
+g_optim = tf.train.RMSPropOptimizer(learning_rate=lr).minimize(
     g_loss, var_list=g_vars)
 # End: Build model.
 ################################################################################
@@ -252,6 +254,9 @@ for step in range(max_step):
             [g_optim, d_logit_real, d_logit_fake, d_loss, g_loss],
             fetch_dict)
 
+    if step % 100000 == 9999:
+        sess.run(lr_update)
+
     if step > 0 and step % log_step == 0:
         # Stop clock after log_step training steps.
         t1 = time.time()
@@ -279,7 +284,7 @@ for step in range(max_step):
 
         if data_dim == 2:
             measure_to_plot = energy_gen_vs_unthinned
-            fig = plot(generated, data_raw, data_raw_unthinned, step,
+            fig = plot(generated, data_raw, data_raw_unthinned, log_dir, tag, step,
                 measure_to_plot)
 
         if np.isnan(d_loss_):
@@ -287,8 +292,9 @@ for step in range(max_step):
 
         # Print diagnostics.
         print("#################")
+        lr_ = sess.run(lr)
         print('ce_{}'.format(tag))
-        print('Iter: {}, lr={}'.format(step, learning_rate))
+        print('Iter: {}, lr={}'.format(step, lr_))
         print('  d_loss: {:.4}'.format(d_loss_))
         print('  g_loss: {:.4}'.format(g_loss_))
         print('  mmd_gen_vs_unthinned: {:.4}'.format(mmd_gen_vs_unthinned))
@@ -304,27 +310,22 @@ for step in range(max_step):
 
 
         # Plot timing and performance together.
-        with open(os.path.join(log_dir, 'timing_perf.txt'), 'a') as f:
-            f.write('ce,{},{},{},{},{},{}\n'.format(
-                tag, step, mmd_gen_vs_unthinned, energy_gen_vs_unthinned,
+        with open(os.path.join(log_dir, 'perf.txt'), 'a') as f:
+            model_type = 'ce'
+            model_subtype, model_dim, model_runnum = tag.split('_')
+            model_dim = model_dim[3:]  # Drop "dim" from "dim*".
+            model_runnum = model_runnum[3:]  # Drop "run" from "run*".
+            f.write('{},{},{},{},{},{},{},{},{},{}\n'.format(
+                model_type, model_subtype, model_dim, model_runnum, step,
+                g_loss_, mmd_gen_vs_unthinned, energy_gen_vs_unthinned,
                 kl_gen_vs_unthinned, chunk_time))
+
+        # Plot timing and performance together.
+        #with open(os.path.join(log_dir, 'perf.txt'), 'a') as f:
+        #    # Schema: model, tag, step, g_loss, mmd, energy, kl, time
+        #    f.write('ce,{},{},{},{},{},{},{}\n'.format(
+        #        tag, step, g_loss_, mmd_gen_vs_unthinned, energy_gen_vs_unthinned,
+        #        kl_gen_vs_unthinned, chunk_time))
 
         # Restart clock for next log_step training steps.
         t0 = time.time()
-
-
-
-def to_normed(d, index=None):
-    if index:
-        return (d - data_raw_mean[index]) /  data_raw_std[index]
-    else:
-        return (d - data_raw_mean) /  data_raw_std
-
-
-def to_raw(d, index=None):
-    if index:
-        return d * data_raw_std[index] + data_raw_mean[index]
-    else:
-        return d * data_raw_std + data_raw_mean
-
-

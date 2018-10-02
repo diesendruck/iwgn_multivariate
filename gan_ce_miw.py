@@ -26,6 +26,8 @@ parser.add_argument('--do_p', default=False, action='store_true', dest='do_p',
 parser.add_argument('--data_dim', type=int, default=2)
 parser.add_argument('--max_step', type=int, default=25000)
 parser.add_argument('--log_step', type=int, default=1000)
+parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--learning_rate', type=float, default=1e-4)
 
 args = parser.parse_args()
 tag = args.tag
@@ -33,14 +35,14 @@ do_p = args.do_p
 data_dim = args.data_dim
 max_step = args.max_step
 log_step = args.log_step
+batch_size = args.batch_size
+learning_rate_init = args.learning_rate
 
 data_num = 10000
 latent_dim = 10
 
-batch_size = 64 
 noise_dim = 10
 h_dim = 10
-learning_rate = 1e-4
 log_dir = 'results/ce_{}'.format(tag)
 
 
@@ -53,7 +55,8 @@ log_dir = 'results/ce_{}'.format(tag)
 # data_raw_mean,
 # data_raw_std) = generate_data(
 #     data_num, data_dim, latent_dim, with_latents=False, m_weight=2.)
-(data_raw,
+(m_weight,
+ data_raw,
  data_raw_weights,
  data_raw_unthinned,
  data_raw_unthinned_weights,
@@ -71,7 +74,7 @@ def sigmoid_cross_entropy_with_logits(logits, labels):
         return tf.nn.sigmoid_cross_entropy_with_logits(logits=logits, targets=labels)
 
 
-def plot(generated, data_raw, data_raw_unthinned, step, mmd_gen_vs_unthinned):
+def plot(generated, data_raw, data_raw_unthinned, log_dir, tag, step, measure_to_plot):
     gen_v1 = generated[:, 0] 
     gen_v2 = generated[:, 1] 
     raw_v1 = [d[0] for d in data_raw]
@@ -80,17 +83,15 @@ def plot(generated, data_raw, data_raw_unthinned, step, mmd_gen_vs_unthinned):
     raw_unthinned_v2 = [d[1] for d in data_raw_unthinned]
 
     # Evaluate D on grid.
-    grid_gran = 20
-    grid_x = np.linspace(min(data_raw[:, 0]), max(data_raw[:, 0]), grid_gran)
-    grid_y = np.linspace(min(data_raw[:, 1]), max(data_raw[:, 1]), grid_gran)
-    vals_on_grid = np.zeros((grid_gran, grid_gran))
-    for i in range(grid_gran):
-        for j in range(grid_gran):
-            grid_x_normed = (grid_x[i] - data_raw_mean[0]) / data_raw_std[0]
-            grid_y_normed = (grid_y[j] - data_raw_mean[0]) / data_raw_std[0]
-            vals_on_grid[i][j] = run_discrim([grid_x_normed, grid_y_normed])
-            #vals_on_grid[i][j] = sess.run(
-            #    d_real_sample, {x_sample: [grid_x_normed, grid_y_normed]})
+    #grid_gran = 20
+    #grid_x = np.linspace(min(data_raw[:, 0]), max(data_raw[:, 0]), grid_gran)
+    #grid_y = np.linspace(min(data_raw[:, 1]), max(data_raw[:, 1]), grid_gran)
+    #vals_on_grid = np.zeros((grid_gran, grid_gran))
+    #for i in range(grid_gran):
+    #    for j in range(grid_gran):
+    #        grid_x_normed = (grid_x[i] - data_raw_mean[0]) / data_raw_std[0]
+    #        grid_y_normed = (grid_y[j] - data_raw_mean[0]) / data_raw_std[0]
+    #        vals_on_grid[i][j] = run_discrim([grid_x_normed, grid_y_normed])
 
     fig = plt.figure()
     gs = GridSpec(8, 4)
@@ -101,15 +102,15 @@ def plot(generated, data_raw, data_raw_unthinned, step, mmd_gen_vs_unthinned):
     ax_joint.scatter(raw_v1, raw_v2, c='gray', alpha=0.1)
     ax_joint.scatter(gen_v1, gen_v2, alpha=0.3)
     ax_joint.set_aspect('auto')
-    ax_joint.imshow(vals_on_grid, interpolation='nearest', origin='lower',
-        alpha=0.3, aspect='auto',
-        extent=[grid_x.min(), grid_x.max(), grid_y.min(), grid_y.max()])
+    #ax_joint.imshow(vals_on_grid, interpolation='nearest', origin='lower',
+    #    alpha=0.3, aspect='auto',
+    #    extent=[grid_x.min(), grid_x.max(), grid_y.min(), grid_y.max()])
 
-    ax_marg_x.hist([raw_v1, gen_v1], bins=30, color=['gray', 'blue'],
+    bins = np.arange(-3, 3, 0.2)
+    ax_marg_x.hist([raw_v1, gen_v1], bins=bins, color=['gray', 'blue'],
         label=['data', 'gen'], alpha=0.3, normed=True)
-    ax_marg_y.hist([raw_v2, gen_v2], bins=30, color=['gray', 'blue'],
+    ax_marg_y.hist([raw_v2, gen_v2], bins=bins, color=['gray', 'blue'],
         label=['data', 'gen'], orientation="horizontal", alpha=0.3, normed=True)
-
     ax_marg_x.legend()
     ax_marg_y.legend()
 
@@ -122,18 +123,19 @@ def plot(generated, data_raw, data_raw_unthinned, step, mmd_gen_vs_unthinned):
     ax_raw = fig.add_subplot(gs[5:8, 0:3], sharex=ax_joint)
     ax_raw_marg_x = fig.add_subplot(gs[4, 0:3], sharex=ax_raw)
     ax_raw_marg_y = fig.add_subplot(gs[5:8, 3], sharey=ax_raw)
-    ax_raw.scatter(raw_unthinned_v1, raw_unthinned_v2, c='gray', alpha=0.1)
-    ax_raw_marg_x.hist(raw_unthinned_v1, bins=30, color='gray',
-        label='d', alpha=0.3, normed=True)
-    ax_raw_marg_y.hist(raw_unthinned_v2, bins=30, color='gray',
-        label='d', orientation="horizontal", alpha=0.3, normed=True)
+    ax_raw.scatter(raw_unthinned_v1, raw_unthinned_v2, c='green', alpha=0.1)
+    ax_raw_marg_x.hist([raw_unthinned_v1, gen_v1], bins=bins, color=['green', 'blue'],
+        label=['unthinned', 'gen'], alpha=0.3, normed=True)
+    ax_raw_marg_y.hist([raw_unthinned_v2, gen_v2], bins=bins, color=['green', 'blue'],
+        label=['unthinned', 'gen'], alpha=0.3, normed=True, orientation='horizontal')
+    ax_raw_marg_x.legend()
+    ax_raw_marg_y.legend()
     plt.setp(ax_raw_marg_x.get_xticklabels(), visible=False)
     plt.setp(ax_raw_marg_y.get_yticklabels(), visible=False)
     ########
 
-    plt.suptitle('iwgan. step: {}, mmd_gen_vs_unthinned: {:.4f}'.format(
-        step, mmd_gen_vs_unthinned))
-
+    plt.suptitle('{}. step: {}, discrepancy: {:.4f}'.format(
+        log_dir[8:], step, measure_to_plot))
     plt.savefig('{}/{}.png'.format(log_dir, step))
     plt.close()
 
@@ -145,20 +147,6 @@ def get_sample_z(m, n):
 def run_discrim(x_in):
     x_in = np.reshape(x_in, [-1, data_dim])
     return sess.run(d_real_sample, feed_dict={x_sample: x_in}) 
-
-
-def to_raw(d, index=None):
-    if index:
-        return d * data_raw_std[index] + data_raw_mean[index]
-    else:
-        return d * data_raw_std + data_raw_mean
-
-
-def to_normed(d, index=None):
-    if index:
-        return (d - data_raw_mean[index]) /  data_raw_std[index]
-    else:
-        return (d - data_raw_mean) /  data_raw_std
 
 
 ################################################################################
@@ -198,6 +186,9 @@ def tf_median(v):
 
 
 # Beginning of graph.
+lr = tf.Variable(learning_rate_init, name='lr', trainable=False)
+lr_update = tf.assign(lr, tf.maximum(lr * 0.5, 1e-8), name='lr_update')
+
 z = tf.placeholder(tf.float32, shape=[batch_size, noise_dim], name='z')
 x = tf.placeholder(tf.float32, shape=[batch_size, data_dim], name='x')
 w = tf.placeholder(tf.float32, shape=[batch_size, 1], name='weights')
@@ -239,15 +230,15 @@ g_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
 # Set optim nodes.
 clip = 0
 if clip:
-    d_opt = tf.train.RMSPropOptimizer(learning_rate=learning_rate)
+    d_opt = tf.train.RMSPropOptimizer(learning_rate=lr)
     d_grads_, d_vars_ = zip(*d_opt.compute_gradients(d_loss, var_list=d_vars))
     d_grads_clipped_ = tuple(
         [tf.clip_by_value(grad, -0.01, 0.01) for grad in d_grads_])
     d_optim = d_opt.apply_gradients(zip(d_grads_clipped_, d_vars_))
 else:
-    d_optim = tf.train.RMSPropOptimizer(learning_rate=learning_rate).minimize(
+    d_optim = tf.train.RMSPropOptimizer(learning_rate=lr).minimize(
         d_loss, var_list=d_vars)
-g_optim = tf.train.RMSPropOptimizer(learning_rate=learning_rate).minimize(
+g_optim = tf.train.RMSPropOptimizer(learning_rate=lr).minimize(
     g_loss, var_list=g_vars)
 # End: Build model.
 ################################################################################
@@ -281,39 +272,44 @@ for step in range(max_step):
             [g_optim, d_logit_real, d_logit_fake, d_loss, g_loss],
             fetch_dict)
 
+    if step % 100000 == 9999:
+        sess.run(lr_update)
+
     if step > 0 and step % log_step == 0:
         # Stop clock after log_step training steps.
         t1 = time.time()
         chunk_time = t1 - t0
 
-        n_sample = 10000
+        n_sample = 1000
         z_sample_input = get_sample_z(n_sample, noise_dim)
         g_out = sess.run(g_sample, feed_dict={z_sample: z_sample_input})
         generated = np.array(g_out) * data_raw_std + data_raw_mean
         # Compute MMD between simulations and unthinned (target) data.
         mmd_gen_vs_unthinned, _ = compute_mmd(
-            generated[np.random.choice(n_sample, 500)],
-            data_raw_unthinned[np.random.choice(data_num, 500)])
+            generated[np.random.choice(n_sample, 1000)],
+            data_raw_unthinned[np.random.choice(data_num, 1000)])
         # Compute energy between simulations and unthinned (target) data.
         energy_gen_vs_unthinned = compute_energy(
-            generated[np.random.choice(n_sample, 500)],
-            data_raw_unthinned[np.random.choice(data_num, 500)])
+            generated[np.random.choice(n_sample, 1000)],
+            data_raw_unthinned[np.random.choice(data_num, 1000)])
         # Compute KL between simulations and unthinned (target) data.
         kl_gen_vs_unthinned = compute_kl(
-            generated[np.random.choice(n_sample, 500)],
-            data_raw_unthinned[np.random.choice(data_num, 500)], k=5)
+            generated[np.random.choice(n_sample, 1000)],
+            data_raw_unthinned[np.random.choice(data_num, 1000)], k=5)
 
         if data_dim == 2:
-            fig = plot(generated, data_raw, data_raw_unthinned, step,
-                mmd_gen_vs_unthinned)
+            measure_to_plot = energy_gen_vs_unthinned
+            fig = plot(generated, data_raw, data_raw_unthinned, log_dir, tag, step,
+                measure_to_plot)
 
         if np.isnan(d_loss_):
             sys.exit('got nan')
 
         # Print diagnostics.
         print("#################")
+        lr_ = sess.run(lr)
         print('ce_{}'.format(tag))
-        print('Iter: {}, lr={}'.format(step, learning_rate))
+        print('Iter: {}, lr={}'.format(step, lr_))
         print('  d_loss: {:.4}'.format(d_loss_))
         print('  g_loss: {:.4}'.format(g_loss_))
         print('  mmd_gen_vs_unthinned: {:.4}'.format(mmd_gen_vs_unthinned))
@@ -329,9 +325,14 @@ for step in range(max_step):
 
 
         # Plot timing and performance together.
-        with open(os.path.join(log_dir, 'timing_perf.txt'), 'a') as f:
-            f.write('ce,{},{},{},{},{},{}\n'.format(
-                tag, step, mmd_gen_vs_unthinned, energy_gen_vs_unthinned,
+        with open(os.path.join(log_dir, 'perf.txt'), 'a') as f:
+            model_type = 'ce'
+            model_subtype, model_dim, model_runnum = tag.split('_')
+            model_dim = model_dim[3:]  # Drop "dim" from "dim*".
+            model_runnum = model_runnum[3:]  # Drop "run" from "run*".
+            f.write('{},{},{},{},{},{},{},{},{},{}\n'.format(
+                model_type, model_subtype, model_dim, model_runnum, step,
+                g_loss_, mmd_gen_vs_unthinned, energy_gen_vs_unthinned,
                 kl_gen_vs_unthinned, chunk_time))
 
         # Restart clock for next log_step training steps.
