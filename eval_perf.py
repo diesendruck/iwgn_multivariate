@@ -75,28 +75,29 @@ def run_boxplots(df, measure, data_dim, case='all'):
             hue_order=['ce_iw', 'ce_miw', 'ce_sniw', 'ce_conditional', 'ce_upsample',
                        'mmd_iw', 'mmd_miw', 'mmd_sniw', 'mmd_upsample'],
             measure=measure, gan_type='all')
-    elif case == 'ce':
-        boxplots(df_ce, data_dim,
-                 hue_order=['ce_iw', 'ce_miw', 'ce_sniw', 'ce_upsample'],
-                 measure=measure, gan_type='ce')
-    elif case == 'mmd':
-        boxplots(df_mmd, data_dim,
-                 hue_order=['mmd_iw', 'mmd_miw', 'mmd_sniw', 'mmd_upsample'],
-                 measure=measure, gan_type='mmd')
     elif case == 'no_cgan':
         boxplots(df, data_dim, 
             hue_order=['ce_iw', 'ce_miw', 'ce_sniw', 'ce_upsample',
                        'mmd_iw', 'mmd_miw', 'mmd_sniw', 'mmd_upsample'],
             measure=measure, gan_type='all')
-    elif case == 'ce_short':
+    elif case == 'ce':
+        boxplots(df_ce, data_dim,
+                 hue_order=['ce_iw', 'ce_miw', 'ce_sniw', 'ce_upsample'],
+                 measure=measure, gan_type='ce')
+    elif case == 'ce_iw_vs_up':
         boxplots(df_ce_iw_vs_up, data_dim,
                  hue_order=['ce_iw', 'ce_upsample'],
                  measure=measure, gan_type='ce')
+    elif case == 'mmd':
+        boxplots(df_mmd, data_dim,
+                 hue_order=['mmd_iw', 'mmd_miw', 'mmd_sniw', 'mmd_upsample'],
+                 measure=measure, gan_type='mmd')
 
 
 # START SCRIPT.
 def main():
-    base_path = '/home/maurice/iwgn_multivariate/results'
+    results_dir = 'results'
+    base_path = '/home/maurice/iwgn_multivariate/{}'.format(results_dir)
     plot_path = os.path.join(base_path, 'plots')
     if not os.path.exists(base_path):
         sys.exit('Need a results dir to read from.')
@@ -123,10 +124,12 @@ def main():
                 dtype={
                     'names': (
                         'model_type', 'model_subtype', 'dim', 'run',
-                        'step', 'g_loss', 'mmd', 'energy', 'kl', 'time'),
+                        'step', 'g_loss', 'mmd_v', 'energy_v', 'kl_v',
+                        'mmd_t', 'energy_t', 'kl_t', 'time'),
                     'formats': (
                         '|S24', '|S24', np.int, np.int, np.int, np.float,
-                        np.float, np.float, np.float, np.float)},
+                        np.float, np.float, np.float, np.float, np.float,
+                        np.float, np.float)},
                 delimiter=',', skiprows=0)
             if len(run_performance.shape) == 0:
                 run_performance = np.atleast_1d(run_performance)
@@ -135,50 +138,26 @@ def main():
 
             # Add row to df.
             for row in run_performance:
-                #m = row['model']
-                #t = row['tag']
-                #if m == 'ce':
-                #    if t.startswith('iw'):
-                #        row['model'] = 'ce_iw'
-                #    elif t.startswith('miw'):
-                #        row['model'] = 'ce_miw'
-                #    elif t.startswith('sn'):
-                #        row['model'] = 'ce_sniw'
-                #    elif t.startswith('cond'):
-                #        row['model'] = 'ce_conditional'
-                #    elif t.startswith('upsample_rand'):
-                #        row['model'] = 'ce_upsample'
-                #    elif t.startswith('upsample_rej'):
-                #        row['model'] = 'Upsample-Rej-CE'
-                #elif m == 'mmd':
-                #    if t.startswith('iw'):
-                #        row['model'] = 'mmd_iw'
-                #    elif t.startswith('miw'):
-                #        row['model'] = 'mmd_miw'
-                #    elif t.startswith('sn'):
-                #        row['model'] = 'mmd_sniw'
-                #    elif t.startswith('upsampl'):
-                #        row['model'] = 'mmd_upsample'
-
                 # Add row to dataframe.
-                model_shorttag = '{}_{}'.format(
+                model = '{}_{}'.format(
                     row['model_type'], row['model_subtype'])
                 row_df = pd.DataFrame(
-                    [[model_shorttag, row['model_type'], row['model_subtype'],
+                    [[model, row['model_type'], row['model_subtype'],
                       row['dim'], row['run'], row['step'], row['g_loss'],
-                      row['mmd'], row['energy'], row['kl'], row['time']]], 
-                    columns=['model_shorttag', 'model_type', 'model_subtype', 'dim', 'run',
-                        'step', 'g_loss', 'mmd', 'energy', 'kl', 'time'])
+                      row['mmd_v'], row['energy_v'], row['kl_v'], row['mmd_t'],
+                      row['energy_t'], row['kl_t'], row['time']]], 
+                    columns=['model', 'model_type', 'model_subtype', 'dim', 'run',
+                        'step', 'g_loss', 'mmd_v', 'energy_v', 'kl_v', 'mmd_t',
+                        'energy_t', 'kl_t', 'time'])
                 df = df.append(row_df, ignore_index=True)
 
 
         ##############################################
         ##############################################
-        # PLOT PERFORMANCE ASSOCIATED WITH BEST G_LOSS 
+        # PLOT PERFORMANCE ASSOCIATED WITH BEST VALIDATION DISCREPANCY 
 
-        # For each model, find run that performed best, based on g_loss.
-        #model_names = np.unique([n.split('_dim')[0] for n in model_run_names])
-        model_names = df.model_shorttag.unique()
+        # For each model, find run that performed best, based on validation.
+        model_names = df.model.unique()
         performance_per_model = []
 
         for model_name in model_names:
@@ -189,51 +168,53 @@ def main():
             # For each run, compute average g_loss and mmd in a tail of available
             # log steps. A run_outcomes array will store g_loss and mmd per run.
             tail = 5
-            discrepancy = 'mmd'  # ['mmd', 'energy', 'kl']
             run_outcomes = np.zeros((len(runs), 2))  
             for i, run_name in enumerate(runs):
                 # Subset dataframe for this run.
-                dim = int(run_name.split('_')[2][3:])
-                run_num = int(run_name.split('_')[3][3:])
-                df_run_subset = df.loc[df['model_shorttag'] == model_name]
+                dim = int(run_name.split('_')[2].replace('dim', ''))
+                run_num = int(run_name.split('_')[3].replace('run', ''))
+                df_run_subset = df.loc[df['model'] == model_name]
                 df_run_subset = df_run_subset.loc[df['dim'] == dim]
                 df_run_subset = df_run_subset.loc[df['run'] == run_num]
 
 
                 # Get tail performance for this run.
-                g_loss_ = np.mean(df_run_subset['g_loss'][-tail:])
-                disc_ = np.mean(df_run_subset[discrepancy][-tail:])
+                validation_loss_ = np.mean(df_run_subset['mmd_v'][-tail:])
+                reported_loss_ = np.mean(df_run_subset['mmd_t'][-tail:])
 
                 # Store performance for this run.
-                run_outcomes[i] = [g_loss_, disc_]
+                run_outcomes[i] = [validation_loss_, reported_loss_]
 
-            # For this model, get best g_loss among runs, and store associated name
-            # and discrepancy. Also store average discrepancy among runs.
-            lowest_g_loss_run_idx = np.argmin(run_outcomes[:,0])  # First col is g_loss.
-            best_g_loss_name = runs[lowest_g_loss_run_idx]
-            best_g_loss_disc= run_outcomes[lowest_g_loss_run_idx, 1]  # Second col is discrepancy
-            avg_model_disc= np.mean(run_outcomes[:,1])
+            # For this model, get best validation_loss_ among runs, and store
+            # associated name and reported_loss. Also store average
+            # reported_loss among runs.
+            best_validation_run_idx = np.argmin(run_outcomes[:,0])
+            best_validation_name = runs[best_validation_run_idx]
+            best_validation_reported_loss = \
+                run_outcomes[best_validation_run_idx, 1]
+            avg_model_loss = np.mean(run_outcomes[:,1])
 
             # Store final info for this model.
             performance_per_model.append(
-                [best_g_loss_name, best_g_loss_disc, avg_model_disc])
+                [best_validation_name, best_validation_reported_loss, avg_model_loss])
 
 
         # Plot performance per model.
         fig = plt.figure()
         for model_perf in performance_per_model:
-            n = best_g_loss_name = model_perf[0]
-            best_g_loss_disc = model_perf[1]
-            avg_model_disc = model_perf[2]
+            n = best_validation_name = model_perf[0]
+            best_validation_reported_loss = model_perf[1]
+            avg_model_loss = model_perf[2]
 
             model_name = n.split('_dim')[0] 
-            dim = int(n.split('_')[2][3:])
-            run_num = int(n.split('_')[3][3:])
-            df_run_subset = df.loc[df['model_shorttag'] == model_name]
+            dim = int(n.split('_')[2].replace('dim', ''))
+            run_num = int(n.split('_')[3].replace('run', ''))
+            df_run_subset = df.loc[df['model'] == model_name]
             df_run_subset = df_run_subset.loc[df['dim'] == dim]
             df_run_subset = df_run_subset.loc[df['run'] == run_num]
 
-            plt.plot(df_run_subset.step, df_run_subset.mmd, label=model_name)
+            # Plot the test loss for the best validation model.
+            plt.plot(df_run_subset.step, df_run_subset.mmd_t, label=model_name)
 
         plt.xlabel('Step')
         plt.ylabel('MMD2')
@@ -244,26 +225,31 @@ def main():
 
         print(df.shape)
         for p in performance_per_model:
-            print('Model: {}\n  best_g_disc, avg_disc: {}, {}'.format(
-                p[0], round(p[1], 4), round(p[2], 4)))
+            print(('best_validation_reported_loss, avg_model_loss: '
+                   '{:.5f}, {:.5f}, model: {}').format(
+                       p[1], p[2], p[0]))
 
 
         ####################################
         # PLOT JUST CE, JUST MMD, and ALL.
 
-        for measure in ['mmd', 'energy', 'kl']:
+        #for measure in ['mmd', 'energy', 'kl']:
             #run_boxplots(df, measure, data_dim, case='special')
-            run_boxplots(df, measure, data_dim, case='ce')
+            #run_boxplots(df, measure, data_dim, case='ce')
+            #run_boxplots(df, measure, data_dim, case='ce_iw_vs_up')
+            #run_boxplots(df, measure, data_dim, case='no_cgan')
 
-        email = 1
+        email = 0
         if email:
+            # The CE results.
             os.system((
                 'echo "{}" | mutt momod@utexas.edu -s '
                 '"test_upsample" '
-                '-a results/plots/boxplot_ce_d2_loss_energy.png '
-                '-a results/plots/boxplot_ce_d2_loss_kl.png '
-                '-a results/plots/boxplot_ce_d2_loss_mmd.png '
-                '-a results/plots/boxplot_ce_d2_time.png').format(os.getcwd()))
+                '-a results/plots/boxplot_ce_d{}_loss_energy.png '
+                '-a results/plots/boxplot_ce_d{}_loss_kl.png '
+                '-a results/plots/boxplot_ce_d{}_loss_mmd.png '
+                '-a results/plots/boxplot_ce_d{}_time.png').format(
+                    os.getcwd(), data_dim, data_dim, data_dim, data_dim))
 
 
 main()

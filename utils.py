@@ -43,7 +43,7 @@ def one_time_data_setup():
         np.save('data/with_latents_{}d_data_raw_mean.npy'.format(data_dim), data_raw_mean)
         np.save('data/with_latents_{}d_data_raw_std.npy'.format(data_dim), data_raw_std)
 
-    n = 1000
+    n = 10000
     latent_dim = 1 
     with_latents = True
     # Fetch constant, which is based on thinning fn.
@@ -212,9 +212,10 @@ def thinning_fn(inputs, m_weight=1, return_normalizing_constant=False):
     """Thinning on zero'th index of input."""
     eps = 1e-10
 
-    case = 5
+    case = 4
 
     if case == 0:
+        # Used with generate_data().
         # Example: For thinning fn x^4 to integrate to 1 on [0,1], m_weight = 1./5.
         normalizing_constant = 1. / 5.
         if return_normalizing_constant:
@@ -222,6 +223,7 @@ def thinning_fn(inputs, m_weight=1, return_normalizing_constant=False):
 
         return (1. / m_weight) * inputs[0] ** 4 + eps
     elif case == 1:
+        # Used with generate_data().
         # Example: For thinning fn x^8 to integrate to 1 on [0,1], m_weight = 1./9.
         normalizing_constant = 1. / 9.
         if return_normalizing_constant:
@@ -229,6 +231,7 @@ def thinning_fn(inputs, m_weight=1, return_normalizing_constant=False):
 
         return (1. / m_weight) * inputs[0] ** 8 + eps
     elif case == 2:
+        # Used with generate_data().
         # Example: Consider thinning fn
         #   {y=0.01 for x on [0,0.5], y=1 for x on (0.5, 1]},
         # which integrates to 0.505 on [0,1]. To integrate to 1, m_weight = 0.505
@@ -240,15 +243,16 @@ def thinning_fn(inputs, m_weight=1, return_normalizing_constant=False):
             return (1. / m_weight) * 0.01 * inputs[0]
         elif inputs[0] > 0.5:
             return (1. / m_weight) * 1. * inputs[0]
-    elif case == 3:
-        # Example: For thinning fn ((x+3)/6)^8 to integrate to 1 on [-3,3],
-        # m_weight = 6. / 9.
-        normalizing_constant = 6. / 9.
-        if return_normalizing_constant:
-            return normalizing_constant
+    #elif case == 3:
+    #    # Example: For thinning fn ((x+3)/6)^8 to integrate to 1 on [-3,3],
+    #    # m_weight = 6. / 9.
+    #    normalizing_constant = 6. / 9.
+    #    if return_normalizing_constant:
+    #        return normalizing_constant
 
-        return (1. / m_weight) * ((inputs[0] + 3.) / 6.) ** 8 + eps  
+    #    return (1. / m_weight) * ((inputs[0] + 3.) / 6.) ** 8 + eps  
     elif case == 4:
+        # Used with generate_data2().
         # Example: For thinning fn (0.95 / (1 + exp(-x)) + 0.05 to integrate to
         # 1 on [-5,5], m_weight = 5.25.
         normalizing_constant = 5.25
@@ -257,6 +261,7 @@ def thinning_fn(inputs, m_weight=1, return_normalizing_constant=False):
 
         return (1. / m_weight) * (0.95 / (1. + np.exp(-1.*inputs[0])) + 0.05) + eps  
     elif case == 5:
+        # Used with generate_data2().
         # Example: For thinning fn (0.99 / (1 + exp(-2x)) + 0.01 to integrate to
         # 1 on [-5,5], m_weight = 5.05.
         normalizing_constant = 5.05
@@ -300,6 +305,36 @@ def natural_sort(l):
     convert = lambda text: int(text) if text.isdigit() else text.lower() 
     alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key) ] 
     return sorted(l, key = alphanum_key)
+
+
+def dense(x, width, activation, batch_residual=False, dropout=None):
+    if batch_residual:
+        x_ = layers.dense(x, width, activation=activation, use_bias=False)
+        x_ = layers.batch_normalization(x_) + x
+    else:
+        x_ = layers.dense(x, width, activation=activation)
+        x_ = layers.batch_normalization(x_)
+
+    if dropout:
+        x_ = tf.nn.dropout(x_, dropout)
+    return x_
+    #if not batch_residual: 
+    #    x_ = layers.dense(x, width, activation=activation) 
+    #    r = layers.batch_normalization(x_) 
+    #    return r 
+    #else: 
+    #    x_ = layers.dense(x, width, activation=activation, use_bias=False)
+    #    r = layers.batch_normalization(x_) + x
+    #    return r
+
+
+def split_80_20(arr):
+    n = len(arr)
+    n80 = int(0.8 * n)
+    n20 = n - n80
+    arr80 = arr[:n80]
+    arr20 = arr[n80:]
+    return arr80, arr20
 
 
 """

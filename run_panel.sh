@@ -14,7 +14,8 @@
 # SET UP list of model names to run and eval.
 #declare -a model_names=('ce_iw' 'ce_miw' 'ce_sniw' 'ce_conditional' 'ce_upsample' 'mmd_iw' 'mmd_miw' 'mmd_sniw' 'mmd_upsample')
 declare -a model_names=('ce_iw' 'ce_miw' 'ce_sniw' 'ce_upsample' 'mmd_iw' 'mmd_miw' 'mmd_sniw' 'mmd_upsample')
-#declare -a model_names=('ce_iw' 'ce_miw' 'ce_sniw' 'ce_upsample')
+#declare -a model_names=('ce_iw' 'ce_upsample')
+#declare -a model_names=('ce_iw')
 
 
 # RUN the models.

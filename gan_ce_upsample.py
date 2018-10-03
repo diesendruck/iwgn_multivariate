@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pdb
+import scipy.stats as stats
 import sys
 sys.path.append('/home/maurice/mmd')
 import tensorflow as tf
@@ -16,11 +17,11 @@ from tensorflow.examples.tutorials.mnist import input_data
 
 from kl_estimators import naive_estimator as compute_kl
 from mmd_utils import compute_mmd, compute_energy
-from utils import get_data, generate_data, sample_data
+from utils import get_data, generate_data, sample_data, dense, split_80_20
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--tag', type=str, default='test')
+parser.add_argument('--tag', type=str, default='test_0_0')
 parser.add_argument('--data_dim', type=int, default=2)
 parser.add_argument('--max_step', type=int, default=25000)
 parser.add_argument('--log_step', type=int, default=1000)
@@ -28,6 +29,9 @@ parser.add_argument('--batch_size', type=int, default=64)
 parser.add_argument('--learning_rate', type=float, default=1e-4)
 parser.add_argument('--sampling', type=str, default='random',
                     choices=['random'])
+parser.add_argument('--latent_dim', type=int, default=10)
+parser.add_argument('--noise_dim', type=int, default=10)
+parser.add_argument('--h_dim', type=int, default=10)
 
 args = parser.parse_args()
 tag = args.tag
@@ -37,11 +41,15 @@ log_step = args.log_step
 batch_size = args.batch_size
 learning_rate_init = args.learning_rate
 sampling = args.sampling
+latent_dim = args.latent_dim
+noise_dim = args.noise_dim
+h_dim = args.h_dim
 
-latent_dim = 10
-noise_dim = 10  # For sampling z as part of generator.
-h_dim = 10
-log_dir = 'results/ce_{}'.format(tag)
+model_type = 'ce'
+model_subtype, model_dim, model_runnum = tag.split('_')
+model_dim = model_dim.replace('dim', '')
+model_runnum = model_runnum.replace('run', '')
+log_dir = 'results/{}_{}'.format(model_type, tag)
 
 
 # Load data.
@@ -62,8 +70,12 @@ log_dir = 'results/ce_{}'.format(tag)
  data_raw_mean,
  data_raw_std) = get_data(data_dim, with_latents=False)
 
-data_num_original = data_raw.shape[0]
-data_num = data_raw.shape[0]
+# To do model selection, separate out two sets of unthinned data. Use the first
+# to select the model, and the second to report that model's performance.
+# Since data_raw_unthinned is sampled entirely separately from training data,
+# and is not used in training, it will be used for validation and test sets.
+(data_raw_unthinned_validation,
+ data_raw_unthinned_test) = split_80_20(data_raw_unthinned)
 
 
 def sigmoid_cross_entropy_with_logits(logits, labels):
@@ -124,9 +136,9 @@ def plot(generated, data_raw, data_raw_unthinned, log_dir, tag, step, measure_to
     ax_raw_marg_y = fig.add_subplot(gs[5:8, 3], sharey=ax_raw)
     ax_raw.scatter(raw_unthinned_v1, raw_unthinned_v2, c='green', alpha=0.1)
     ax_raw_marg_x.hist([raw_unthinned_v1, gen_v1], bins=bins, color=['green', 'blue'],
-        label=['unthinned', 'gen'], alpha=0.3, normed=True)
+        label=['validation', 'gen'], alpha=0.3, normed=True)
     ax_raw_marg_y.hist([raw_unthinned_v2, gen_v2], bins=bins, color=['green', 'blue'],
-        label=['unthinned', 'gen'], alpha=0.3, normed=True, orientation='horizontal')
+        label=['validation', 'gen'], alpha=0.3, normed=True, orientation='horizontal')
     ax_raw_marg_x.legend()
     ax_raw_marg_y.legend()
     plt.setp(ax_raw_marg_x.get_xticklabels(), visible=False)
@@ -141,20 +153,12 @@ def plot(generated, data_raw, data_raw_unthinned, log_dir, tag, step, measure_to
 
 ################################################################################
 # BEGIN: Build model.
-def dense(x, width, activation, batch_residual=False):
-    if not batch_residual:
-        x_ = layers.dense(x, width, activation=activation)
-        return layers.batch_normalization(x_)
-    else:
-        x_ = layers.dense(x, width, activation=activation, use_bias=False)
-        return layers.batch_normalization(x_) + x
-
-
 def Discriminator(inputs, reuse=False):
     with tf.variable_scope('discriminator', reuse=reuse) as d_vs:
         layer = dense(inputs, h_dim, activation=tf.nn.elu)
-        layer = dense(layer, h_dim, activation=tf.nn.elu, batch_residual=True)
-        layer = dense(layer, h_dim, activation=tf.nn.elu, batch_residual=True)
+        layer = dense(layer, h_dim, activation=tf.nn.elu, batch_residual=False)
+        layer = dense(layer, h_dim, activation=tf.nn.elu, batch_residual=False,
+            dropout=0.9)
         d_logit = dense(layer, 1, activation=None)
         d_prob = tf.nn.sigmoid(d_logit)
     d_vars = tf.contrib.framework.get_variables(d_vs)
@@ -164,7 +168,9 @@ def Discriminator(inputs, reuse=False):
 def Generator(z, reuse=False):
     with tf.variable_scope('generator', reuse=reuse) as g_vs:
         layer = dense(z, h_dim, activation=tf.nn.elu)
-        layer = dense(layer, h_dim, activation=tf.nn.elu, batch_residual=True)
+        layer = dense(layer, h_dim, activation=tf.nn.elu, batch_residual=False)
+        layer = dense(layer, h_dim, activation=tf.nn.elu, batch_residual=False,
+            dropout=0.9)
         g = dense(layer, data_dim, activation=None)  # Outputing xy pairs.
     g_vars = tf.contrib.framework.get_variables(g_vs)
     return g, g_vars
@@ -176,7 +182,9 @@ def run_discrim(x_in):
 
 
 def get_sample_z(m, n):
-    return np.random.normal(0., 1., size=[m, n])
+    #return np.random.normal(0., 1., size=[m, n])
+    tnorm = stats.truncnorm(-3, 3, loc=0, scale=1)
+    return tnorm.rvs((m, n))
 
 
 # Beginning of graph.
@@ -203,7 +211,7 @@ g_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
     logits=d_logit_fake, labels=tf.ones_like(d_logit_fake)))
 
 # Set optim nodes.
-clip = 0
+clip = 1
 if clip:
     d_opt = tf.train.RMSPropOptimizer(learning_rate=lr)
     d_grads_, d_vars_ = zip(*d_opt.compute_gradients(d_loss, var_list=d_vars))
@@ -215,7 +223,6 @@ else:
         d_loss, var_list=d_vars)
 g_optim = tf.train.RMSPropOptimizer(learning_rate=lr).minimize(
     g_loss, var_list=g_vars)
-
 # End: Build model.
 ################################################################################
 
@@ -231,6 +238,9 @@ if not os.path.exists(log_dir):
 # Start clock to time execution in chunks of log_step steps.
 t0 = time.time()
 for step in range(max_step):
+    #####
+    # BEGINNING OF TIMED SEGMENT
+
     x_batch_preup, w_batch_preup = sample_data(
         data_normed, data_raw_weights, batch_size)
     z_batch = get_sample_z(batch_size, noise_dim)
@@ -264,24 +274,25 @@ for step in range(max_step):
                 count += 1
         x_batch = np.reshape(x_batch, [-1, data_dim])
 
+    fetch_dict = {
+        z: z_batch,
+        x: x_batch}
 
     for _ in range(5):
         _, d_logit_real_, d_logit_fake_, d_loss_, g_loss_ = sess.run(
             [d_optim, d_logit_real, d_logit_fake, d_loss, g_loss],
-            feed_dict={
-                z: z_batch,
-                x: x_batch})
+            fetch_dict)
     for _ in range(1):
         _, d_logit_real_, d_logit_fake_, d_loss_, g_loss_ = sess.run(
             [g_optim, d_logit_real, d_logit_fake, d_loss, g_loss],
-            feed_dict={
-                z: z_batch,
-                x: x_batch})
+            fetch_dict)
 
-    if step % 100000 == 9999:
+    if step % 100000 == 99999:
         sess.run(lr_update)
 
     if step > 0 and step % log_step == 0:
+        #####
+        # END OF TIMED SEGMENT
         # Stop clock after log_step training steps.
         t1 = time.time()
         chunk_time = t1 - t0
@@ -296,25 +307,39 @@ for step in range(max_step):
         nanlist = [[i, v] for i,v in enumerate(generated) if (np.isnan(v[0]) or np.isnan(v[1]))]
         if len(nanlist) > 0:
             print('#####################\nGENERATED NANs\n####################')
-            #pdb.set_trace()
 
-        # Compute MMD between simulations and unthinned (target) data.
-        mmd_gen_vs_unthinned, _ = compute_mmd(
-            generated[np.random.choice(n_sample, 1000)],
-            data_raw_unthinned[np.random.choice(data_num_original, 1000)])
-        # Compute energy between simulations and unthinned (target) data.
-        energy_gen_vs_unthinned = compute_energy(
-            generated[np.random.choice(n_sample, 1000)],
-            data_raw_unthinned[np.random.choice(data_num_original, 1000)])
-        # Compute KL between simulations and unthinned (target) data.
-        kl_gen_vs_unthinned = compute_kl(
-            generated[np.random.choice(n_sample, 1000)],
-            data_raw_unthinned[np.random.choice(data_num_original, 1000)], k=5)
+
+        ###### LOG VALIDATION AND TEST SCORES #####
+        def disc_to_unthinned(ref_set, generated):
+            ## DISCREPANCIES TO UNTHINNED SET.
+            ref_set_n = len(ref_set)
+            n_sample = len(generated)
+            # Compute MMD, Energy, and KL, between simulations and unthinned data.
+            mmd_, _ = compute_mmd(
+                generated, ref_set[np.random.choice(ref_set_n, n_sample)])
+            energy_ = compute_energy(
+                generated, ref_set[np.random.choice(ref_set_n, n_sample)])
+            kl_ = compute_kl(
+                generated, ref_set[np.random.choice(ref_set_n, n_sample)], k=5)
+            return mmd_, energy_, kl_
+
+        (mmd_gen_vs_unthinned_validation,
+         energy_gen_vs_unthinned_validation,
+         kl_gen_vs_unthinned_validation) = \
+             disc_to_unthinned(
+                 data_raw_unthinned_validation, generated)
+        (mmd_gen_vs_unthinned_test,
+         energy_gen_vs_unthinned_test,
+         kl_gen_vs_unthinned_test) = \
+             disc_to_unthinned(
+                 data_raw_unthinned_test, generated)
+        ############################################
+
 
         if data_dim == 2:
-            measure_to_plot = energy_gen_vs_unthinned
-            fig = plot(generated, data_raw, data_raw_unthinned, log_dir, tag, step,
-                measure_to_plot)
+            measure_to_plot = mmd_gen_vs_unthinned_validation
+            fig = plot(generated, data_raw, data_raw_unthinned_validation,
+                log_dir, tag, step, measure_to_plot)
 
         if np.isnan(d_loss_):
             sys.exit('got nan')
@@ -322,32 +347,31 @@ for step in range(max_step):
         # Print diagnostics.
         print("#################")
         lr_ = sess.run(lr)
-        print('ce_{}'.format(tag))
+        print('{}_{}'.format(model_type, tag))
         print('Iter: {}, lr={}'.format(step, lr_))
         print('  d_loss: {:.4}'.format(d_loss_))
         print('  g_loss: {:.4}'.format(g_loss_))
-        print('  mmd_gen_vs_unthinned: {:.4}'.format(mmd_gen_vs_unthinned))
-        print(data_raw[np.random.choice(data_num, 1), :5])
-        print
-        print(generated[:1, :5])
+        print('  mmd_gen_vs_unthinned: {:.4}'.format(mmd_gen_vs_unthinned_validation))
         with open(os.path.join(log_dir, 'scores_mmd.txt'), 'a') as f:
-            f.write(str(mmd_gen_vs_unthinned)+'\n')
+            f.write(str(mmd_gen_vs_unthinned_validation)+'\n')
         with open(os.path.join(log_dir, 'scores_energy.txt'), 'a') as f:
-            f.write(str(energy_gen_vs_unthinned)+'\n')
+            f.write(str(energy_gen_vs_unthinned_validation)+'\n')
         with open(os.path.join(log_dir, 'scores_kl.txt'), 'a') as f:
-            f.write(str(kl_gen_vs_unthinned)+'\n')
+            f.write(str(kl_gen_vs_unthinned_validation)+'\n')
 
 
         # Plot timing and performance together.
         with open(os.path.join(log_dir, 'perf.txt'), 'a') as f:
-            model_type = 'ce'
-            model_subtype, model_dim, model_runnum = tag.split('_')
-            model_dim = model_dim[3:]  # Drop "dim" from "dim*".
-            model_runnum = model_runnum[3:]  # Drop "run" from "run*".
-            f.write('{},{},{},{},{},{},{},{},{},{}\n'.format(
+            f.write('{},{},{},{},{},{},{},{},{},{},{},{},{}\n'.format(
                 model_type, model_subtype, model_dim, model_runnum, step,
-                g_loss_, mmd_gen_vs_unthinned, energy_gen_vs_unthinned,
-                kl_gen_vs_unthinned, chunk_time))
+                g_loss_,
+                mmd_gen_vs_unthinned_validation,
+                energy_gen_vs_unthinned_validation,
+                kl_gen_vs_unthinned_validation,
+                mmd_gen_vs_unthinned_test,
+                energy_gen_vs_unthinned_test,
+                kl_gen_vs_unthinned_test,
+                chunk_time))
 
         # Restart clock for next log_step training steps.
         t0 = time.time()
